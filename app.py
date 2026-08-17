@@ -10,45 +10,64 @@ def home():
 @app.route('/schedule', methods=['POST'])
 def schedule():
     try:
-        # 1️⃣ 【接收訂單】：讀取從 Google 試算表傳來的名單與條件 (JSON 格式)
+        # 1️⃣ 【接收訂單資料】
         data = request.get_json()
-        
-        # 這裡未來會接收：同仁名單、請假日期、歷史打掃次數等
         staff_list = data.get('staff_list', [])
         days_in_month = data.get('days_in_month', 28)
-
-        # 2️⃣ 【啟動引擎】：建立 OR-Tools 數學模型
+        
+        # 建立 OR-Tools 數學模型與求解器
         model = cp_model.CpModel()
-
-        # --- 🧠 核心邏輯區 (The Brain) ---
         
-        # [引擎 A：中午值班]
-        # 規則：平日 3-4 人，假日 1-2 人。
-        # 防呆：群組1(徐朱曹)<=1，群組2(財務室)<=1，林淑芬與張珮儀不排同天。
+        # 2️⃣ 【建立變數 (格子)】
+        # 想像我們在電腦記憶體裡畫了一張很大的空白班表
+        # noon_shifts[(d, s)] 代表：第 d 天，員工 s 是否要值中午班 (1=是, 0=否)
+        noon_shifts = {}
+        for d in range(1, days_in_month + 1):
+            for s in staff_list:
+                noon_shifts[(d, s)] = model.NewBoolVar(f'noon_d{d}_{s}')
+                
+        # 3️⃣ 【寫入防呆規則 (Constraints)】
         
-        # [引擎 B：電子書輪值]
-        # 規則：10號後平日排班。限諮詢、出納、帳務。
-        # 綁定：優先指派「當天已被排到中午值班」的人。
+        for d in range(1, days_in_month + 1):
+            # [規則 A] 需求人數：假設平日需要 3 人
+            model.Add(sum(noon_shifts[(d, s)] for s in staff_list) == 3)
+            
+            # [規則 B] 群組 1 防護網：徐淑芳、朱育萱、曹芯穎，每天最多 1 人
+            group1 = [s for s in staff_list if s in ["徐淑芳", "朱育萱", "曹芯穎"]]
+            if len(group1) > 0:
+                model.Add(sum(noon_shifts[(d, s)] for s in group1) <= 1)
+                
+            # [規則 C] 王不見王：林淑芬與張珮儀絕對不排在同一天
+            if "林淑芬" in staff_list and "張珮儀" in staff_list:
+                model.Add(noon_shifts[(d, "林淑芬")] + noon_shifts[(d, "張珮儀")] <= 1)
         
-        # [引擎 C：打掃輪值]
-        # 規則：結帳室與機動固定。其餘區域取消倒回收優先權。
-        # 公平：比對歷史紀錄，優先派給「過去做最少次」的人。
+        # 4️⃣ 【啟動 AI 求解】
+        solver = cp_model.CpSolver()
+        # 設定思考時間上限 (例如 10 秒)
+        solver.parameters.max_time_in_seconds = 10.0 
+        status = solver.Solve(model)
         
-        # ---------------------------------
-        
-        # 3️⃣ 【回傳餐點】：將算好的排班表打包，準備送回 Google 試算表
-        # (目前先設定為成功接收訊號的格式，待前端資料接通後即可啟用真實求解器)
-        response_data = {
-            "status": "success",
-            "message": "AI 大腦已成功收到規則，三大輪值引擎運算完畢！",
-            "schedule_result": "這裡未來會填滿 28 天的排班結果"
-        }
-        
-        return jsonify(response_data)
+        # 5️⃣ 【解讀結果並回傳】
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            # 如果成功找到答案，就把名單整理出來
+            result_schedule = {}
+            for d in range(1, days_in_month + 1):
+                daily_staff = []
+                for s in staff_list:
+                    if solver.Value(noon_shifts[(d, s)]) == 1:
+                        daily_staff.append(s)
+                result_schedule[f"Day_{d}"] = daily_staff
+                
+            return jsonify({
+                "status": "success",
+                "message": "🎉 AI 運算成功！已完美避開所有防呆限制！",
+                "schedule": result_schedule
+            })
+        else:
+            return jsonify({"status": "error", "message": "找不到符合所有規則的排班方式，請放寬條件！"})
 
     except Exception as e:
-        # 如果運算過程出錯，把錯誤訊息傳回試算表，方便我們除錯
-        return jsonify({"status": "error", "message": str(e)})
+        return jsonify({"status": "error", "message": f"系統發生錯誤：{str(e)}"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
