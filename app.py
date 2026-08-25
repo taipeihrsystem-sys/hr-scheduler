@@ -78,18 +78,34 @@ def schedule():
         status = solver.Solve(model)
         
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            # 成功解出最佳排班表，將結果打包回傳
+            # 🌟 開始把 AI 算好的名單抓出來
+            schedule_result = {
+                "lunch": {},
+                "ebook": {}
+            }
+            
+            # 抓取中午值班名單
+            for d in range(1, month_days + 1):
+                daily_lunch = []
+                for staff in lunch_staff:
+                    if solver.Value(lunch_shifts[(d, staff)]) == 1:
+                        daily_lunch.append(staff)
+                schedule_result["lunch"][str(d)] = daily_lunch
+                
+            # 抓取電子書名單
+            for d in range(1, month_days + 1):
+                daily_ebook = []
+                for staff in ebook_staff:
+                    if solver.Value(ebook_shifts[(d, staff)]) == 1:
+                        daily_ebook.append(staff)
+                schedule_result["ebook"][str(d)] = daily_ebook
+
+            # 打包回傳給 Google 試算表
             result = {
                 "status": "success",
                 "message": "AI 排班成功！",
-                # 這裡會放入解析後的班表資料，回傳給 Google 表單
+                "data": schedule_result
             }
             return jsonify(result), 200
         else:
-            return jsonify({"status": "error", "message": "條件過於嚴苛，AI 無法找到符合所有規則的排班表！"}), 400
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+            return jsonify({"status": "error", "message": "條件過於嚴苛，AI 無法找到符合規則的排班表！"}), 400
