@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！三大引擎準備就緒！"
+    return "機器人主廚已上線！三大引擎 (打掃完美匹配版) 準備就緒！"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -58,19 +58,19 @@ def schedule():
         if "林淑芬" in lunch_staff and "張珮儀" in lunch_staff:
             for d in range(1, month_days + 1):
                 model.Add(lunch_shifts[(d, "林淑芬")] + lunch_shifts[(d, "張珮儀")] <= 1)
-
         for d in meeting_days:
             for staff in group_specific:
                 if staff in lunch_staff:
                     model.Add(lunch_shifts[(d, staff)] == 0)
-
         for staff in lunch_staff:
             for d in range(1, month_days - 2):
                 model.Add(sum(lunch_shifts[(d + i, staff)] for i in range(4)) <= 1)
+                
+        lunch_counts = {staff: sum(lunch_shifts[(d, staff)] for d in range(1, month_days + 1)) for staff in lunch_staff}
         for staff in lunch_staff:
             last_count = last_month_counts.get(staff, 0)
             max_shifts = 3 if last_count >= 4 else 4
-            model.Add(sum(lunch_shifts[(d, staff)] for d in range(1, month_days + 1)) <= max_shifts)
+            model.Add(lunch_counts[staff] <= max_shifts)
 
         # ==========================================
         # 📖 引擎二：電子書輪值
@@ -87,8 +87,7 @@ def schedule():
                 try: day_val = int(date_str.split('/')[1])
                 except: pass
             
-            # 10號以後排班，遇假日不排
-            if day_val < 10 or str(d) in holiday_shifts:
+            if day_val <= 10 or str(d) in holiday_shifts:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
@@ -97,60 +96,71 @@ def schedule():
         for staff in ebook_staff:
             for d in range(1, month_days - 4):
                 model.Add(sum(ebook_shifts[(d + i, staff)] for i in range(6)) <= 1)
+                
+        ebook_counts = {staff: sum(ebook_shifts[(d, staff)] for d in range(1, month_days + 1)) for staff in ebook_staff}
         for staff in ebook_staff:
-             model.Add(sum(ebook_shifts[(d, staff)] for d in range(1, month_days + 1)) <= 2)
+             model.Add(ebook_counts[staff] <= 2)
 
         # ==========================================
-        # 🧹 引擎三：打掃輪值 
+        # 🧹 引擎三：打掃輪值 (22人完美匹配)
         # ==========================================
         clean_shifts = {}
         clean_categories = ["辦公室掃地", "辦公室拖地", "會議室", "窗戶", "志工區", "公共櫃", "倒回收"]
         clean_reqs = {"辦公室掃地": 6, "辦公室拖地": 6, "會議室": 2, "窗戶": 1, "志工區": 3, "公共櫃": 2, "倒回收": 2}
-        total_reqs = sum(clean_reqs.values()) 
+        total_reqs = sum(clean_reqs.values()) # 22 個洞
         
         for staff in clean_staff:
             for cat in clean_categories:
                 clean_shifts[(staff, cat)] = model.NewBoolVar(f'clean_{staff}_{cat}')
                 
+        # 每個人分配的任務數量防呆 (萬一人數不足22，允許最多2項；剛好22人就每人1項)
+        max_tasks = 1 if len(clean_staff) >= total_reqs else 2
         for staff in clean_staff:
-            model.AddAtMostOne(clean_shifts[(staff, cat)] for cat in clean_categories)
+            model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) <= max_tasks)
             
-        if len(clean_staff) >= total_reqs:
-            for cat in clean_categories:
-                model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff) == clean_reqs[cat])
-        else:
-            for cat in clean_categories:
-                model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff) <= clean_reqs[cat])
-            model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff for cat in clean_categories) == len(clean_staff))
+        # 強制 22 個打掃洞都要補滿
+        for cat in clean_categories:
+            model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff) == clean_reqs[cat])
 
         # ==========================================
-        # 🌟 終極目標計算 (Penalty & Bonus)
+        # 🌟 公平正義指標 (Fairness Rewards & Penalties)
         # ==========================================
         penalty = 0
+        overlap_bonus = 0
         
-        # 1. 打掃歷史迴避懲罰
+        # 1. 🧹 打掃歷史絕對公平迴避 (做過越多次，懲罰越重)
         for staff in clean_staff:
             history = clean_history.get(staff, {})
             for cat in clean_categories:
-                if int(history.get(cat, 0)) > 0:
-                    penalty += clean_shifts[(staff, cat)] * 10
+                done_times = int(history.get(cat, 0))
+                # 歷史上有幾個月做過，排斥力就乘以 100！強烈優先排給沒做過的人！
+                penalty += clean_shifts[(staff, cat)] * (done_times * 100)
                     
-        # 2. 🌟 中午與電子書連動加分 (重疊時給予高分獎勵)
-        overlap_bonus = 0
+        # 2. 中午與電子書連動加分
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
                 if staff in lunch_staff:
                     overlap_var = model.NewBoolVar(f'overlap_d{d}_{staff}')
-                    # 設定邏輯：如果這天他同時被排了中午與電子書，overlap_var 就可以是 1
                     model.Add(overlap_var <= lunch_shifts[(d, staff)])
                     model.Add(overlap_var <= ebook_shifts[(d, staff)])
-                    overlap_bonus += overlap_var * 10 
+                    overlap_bonus += overlap_var * 5
                     
-        # AI 的目標是：讓懲罰越少越好，讓連動加分越多越好！
+        for staff in ebook_staff:
+            has_ebook = model.NewBoolVar(f'has_ebook_{staff}')
+            model.Add(ebook_counts[staff] >= 1).OnlyEnforceIf(has_ebook)
+            model.Add(ebook_counts[staff] == 0).OnlyEnforceIf(has_ebook.Not())
+            overlap_bonus += has_ebook * 20 
+            
+        for staff in lunch_staff:
+            has_lunch = model.NewBoolVar(f'has_lunch_{staff}')
+            model.Add(lunch_counts[staff] >= 2).OnlyEnforceIf(has_lunch)
+            model.Add(lunch_counts[staff] < 2).OnlyEnforceIf(has_lunch.Not())
+            overlap_bonus += has_lunch * 15 
+
         model.Minimize(penalty - overlap_bonus)
 
         # ==========================================
-        # 3. 呼叫求解器並打包結果
+        # 3. 呼叫求解器
         # ==========================================
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 20.0 
