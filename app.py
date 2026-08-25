@@ -19,72 +19,63 @@ def schedule():
         ebook_staff = data.get('ebook_staff', [])
         month_days = data.get('month_days', 28)
         
-        # 特殊日與請假資料 (預計從前端傳來)
-        meeting_days = data.get('meeting_days', []) # 例如: [3, 10] 代表第3天和第10天有會議
-        holiday_days = data.get('holiday_days', []) # 假日的日期清單
+        meeting_days = data.get('meeting_days', []) 
+        holiday_days = data.get('holiday_days', []) 
         
         # 2. 啟動 OR-Tools 數學模型
         model = cp_model.CpModel()
         
         # ==========================================
-        # 🍱 引擎一：中午值班 (The Noon Engine)
+        # 🍱 引擎一：中午值班
         # ==========================================
         lunch_shifts = {}
         for d in range(1, month_days + 1):
             for staff in lunch_staff:
                 lunch_shifts[(d, staff)] = model.NewBoolVar(f'lunch_d{d}_{staff}')
                 
-        # [規則] 每日需求人數
         for d in range(1, month_days + 1):
             if d in holiday_days:
-                # 假日邏輯：需根據實際上班人數動態決定 (暫設至少1人，後續依傳入參數精準計算)
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) >= 1)
             else:
-                # 平日 1-25 日排 3 人，26 日後排 4 人
                 req = 3 if d <= 25 else 4
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 
-        # [規則] 王不見王：林淑芬與張珮儀絕對不同天
         if "林淑芬" in lunch_staff and "張珮儀" in lunch_staff:
             for d in range(1, month_days + 1):
                 model.Add(lunch_shifts[(d, "林淑芬")] + lunch_shifts[(d, "張珮儀")] <= 1)
 
-        # [規則] 會議防護網 (組會/幹部會)
-        specific_groups = ["徐淑芳", "朱育萱", "曹芯穎"] # 加上出納與財務室名單...
+        specific_groups = ["徐淑芳", "朱育萱", "曹芯穎"] 
         for d in meeting_days:
             for staff in specific_groups:
                 if staff in lunch_staff:
-                    model.Add(lunch_shifts[(d, staff)] == 0) # 強制不排班
+                    model.Add(lunch_shifts[(d, staff)] == 0)
 
         # ==========================================
-        # 📖 引擎二：電子書輪值 (The E-book Engine)
+        # 📖 引擎二：電子書輪值
         # ==========================================
         ebook_shifts = {}
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
                 ebook_shifts[(d, staff)] = model.NewBoolVar(f'ebook_d{d}_{staff}')
                 
-        # [規則] 10號以後才開始排班，且排除假日
         for d in range(1, month_days + 1):
             if d <= 10 or d in holiday_days:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
 
         # ==========================================
-        # 3. 呼叫求解器 (Solver)
+        # 3. 呼叫求解器並打包結果
         # ==========================================
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 15.0 # 設定運算時間上限 15 秒
+        solver.parameters.max_time_in_seconds = 15.0 
         status = solver.Solve(model)
         
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            # 🌟 開始把 AI 算好的名單抓出來
             schedule_result = {
                 "lunch": {},
                 "ebook": {}
             }
             
-            # 抓取中午值班名單
             for d in range(1, month_days + 1):
                 daily_lunch = []
                 for staff in lunch_staff:
@@ -92,7 +83,6 @@ def schedule():
                         daily_lunch.append(staff)
                 schedule_result["lunch"][str(d)] = daily_lunch
                 
-            # 抓取電子書名單
             for d in range(1, month_days + 1):
                 daily_ebook = []
                 for staff in ebook_staff:
@@ -100,7 +90,6 @@ def schedule():
                         daily_ebook.append(staff)
                 schedule_result["ebook"][str(d)] = daily_ebook
 
-            # 打包回傳給 Google 試算表
             result = {
                 "status": "success",
                 "message": "AI 排班成功！",
@@ -108,4 +97,10 @@ def schedule():
             }
             return jsonify(result), 200
         else:
-            return jsonify({"status": "error", "message": "條件過於嚴苛，AI 無法找到符合規則的排班表！"}), 400
+            return jsonify({"status": "error", "message": "條件過於嚴苛，AI 無法找到符合所有規則的排班表！"}), 400
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
