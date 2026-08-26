@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！三大引擎 (全規則終極版) 準備就緒！"
+    return "機器人主廚已上線！(完美公平與封印版)"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -26,7 +26,7 @@ def schedule():
         model = cp_model.CpModel()
         
         # ==========================================
-        # 🍱 引擎一：中午值班 (The Noon Engine)
+        # 🍱 引擎一：中午值班
         # ==========================================
         lunch_shifts = {}
         for d in range(1, month_days + 1):
@@ -36,7 +36,6 @@ def schedule():
         for d in range(1, month_days + 1):
             day_str = str(d)
             if day_str in holiday_shifts:
-                # 假日動態人數：過濾大安與留停後計算
                 working_today = holiday_shifts[day_str]
                 valid_working = [s for s in working_today if s in lunch_staff]
                 work_count = len(valid_working)
@@ -46,7 +45,6 @@ def schedule():
                     if staff not in valid_working:
                         model.Add(lunch_shifts[(d, staff)] == 0)
             else:
-                # 平日 1~25 日排 3 人，26 日後排 4 人
                 date_str = calendar_dates[d-1] if (d-1) < len(calendar_dates) else ""
                 day_val = 1
                 if '/' in date_str:
@@ -55,10 +53,9 @@ def schedule():
                 req = 4 if day_val >= 26 else 3
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 
-        # 群組防護網
         group_cashier = ["吳仕惇", "孫淑美", "曾速賢", "王思婷"] 
         group_specific = ["徐淑芳", "朱育萱", "曹芯穎"] 
-        group_finance = ["陳可孋", "呂旭玲", "王聖鷹", "潘萍芬"] # 財務室
+        group_finance = ["陳可孋", "呂旭玲", "王聖鷹", "潘萍芬"] 
         
         for d in range(1, month_days + 1):
             present_c = [s for s in group_cashier if s in lunch_staff]
@@ -68,23 +65,19 @@ def schedule():
             present_f = [s for s in group_finance if s in lunch_staff]
             if present_f: model.Add(sum(lunch_shifts[(d, s)] for s in present_f) <= 1)
 
-        # 王不見王
         if "林淑芬" in lunch_staff and "張珮儀" in lunch_staff:
             for d in range(1, month_days + 1):
                 model.Add(lunch_shifts[(d, "林淑芬")] + lunch_shifts[(d, "張珮儀")] <= 1)
                 
-        # 會議避開
         for d in meeting_days:
             for staff in group_specific + group_finance:
                 if staff in lunch_staff:
                     model.Add(lunch_shifts[(d, staff)] == 0)
                     
-        # 疲勞度管理 (間隔 3 天)
         for staff in lunch_staff:
             for d in range(1, month_days - 2):
                 model.Add(sum(lunch_shifts[(d + i, staff)] for i in range(4)) <= 1)
                 
-        # 每月次數上限
         lunch_counts = {staff: sum(lunch_shifts[(d, staff)] for d in range(1, month_days + 1)) for staff in lunch_staff}
         for staff in lunch_staff:
             last_count = last_month_counts.get(staff, 0)
@@ -92,7 +85,7 @@ def schedule():
             model.Add(lunch_counts[staff] <= max_shifts)
 
         # ==========================================
-        # 📖 引擎二：電子書輪值 (The E-book Engine)
+        # 📖 引擎二：電子書輪值
         # ==========================================
         ebook_shifts = {}
         for d in range(1, month_days + 1):
@@ -106,7 +99,8 @@ def schedule():
                 try: day_val = int(date_str.split('/')[1])
                 except: pass
             
-            if day_val < 10 or str(d) in holiday_shifts:
+            # 🌟 修復 2：絕對封印！1~10號皆不排 (<= 10)
+            if day_val <= 10 or str(d) in holiday_shifts:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
@@ -121,18 +115,18 @@ def schedule():
              model.Add(ebook_counts[staff] <= 2)
 
         # ==========================================
-        # 🧹 引擎三：打掃輪值 (The Cleaning Engine)
+        # 🧹 引擎三：打掃輪值
         # ==========================================
         clean_shifts = {}
         clean_categories = ["辦公室掃地", "辦公室拖地", "會議室", "窗戶", "志工區", "公共櫃", "倒回收"]
         clean_reqs = {"辦公室掃地": 6, "辦公室拖地": 6, "會議室": 2, "窗戶": 1, "志工區": 3, "公共櫃": 2, "倒回收": 2}
+        total_reqs = sum(clean_reqs.values()) 
         
         for staff in clean_staff:
             for cat in clean_categories:
                 clean_shifts[(staff, cat)] = model.NewBoolVar(f'clean_{staff}_{cat}')
                 
-        # 加入淑如後，確保所有人公平分配任務
-        max_tasks = 1 if len(clean_staff) >= sum(clean_reqs.values()) else 2
+        max_tasks = 1 if len(clean_staff) >= total_reqs else 2
         for staff in clean_staff:
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) <= max_tasks)
             
@@ -140,19 +134,25 @@ def schedule():
             model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff) == clean_reqs[cat])
 
         # ==========================================
-        # 🌟 智慧優化與公平正義指標 (Penalties & Bonuses)
+        # 🌟 公平正義指標 (Penalties & Bonuses)
         # ==========================================
         penalty = 0
         overlap_bonus = 0
         
-        # 打掃歷史迴避 (做過越多次越不會被抽中)
+        # 打掃歷史迴避
         for staff in clean_staff:
             history = clean_history.get(staff, {})
             for cat in clean_categories:
                 done_times = int(history.get(cat, 0))
                 penalty += clean_shifts[(staff, cat)] * (done_times * 100)
+
+        # 🌟 修復 3：打掃公平鐵拳 (強烈獎勵讓每個人都有事做，不准偏心)
+        for staff in clean_staff:
+            has_clean = model.NewBoolVar(f'has_clean_{staff}')
+            model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) >= 1).OnlyEnforceIf(has_clean)
+            model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) == 0).OnlyEnforceIf(has_clean.Not())
+            overlap_bonus += has_clean * 500  # 超級高分！強迫 AI 把工作分給沒拿到的人
                     
-        # 電子書優先挑選當天有值午班的人
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
                 if staff in lunch_staff:
@@ -196,9 +196,6 @@ def schedule():
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
