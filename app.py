@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！(完美公平與封印版)"
+    return "機器人主廚已上線！(防固定夥伴 & 日期精準版)"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -48,7 +48,7 @@ def schedule():
                 date_str = calendar_dates[d-1] if (d-1) < len(calendar_dates) else ""
                 day_val = 1
                 if '/' in date_str:
-                    try: day_val = int(date_str.split('/')[1])
+                    try: day_val = int(date_str.split('/')[1].strip())
                     except: pass
                 req = 4 if day_val >= 26 else 3
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
@@ -84,6 +84,27 @@ def schedule():
             max_shifts = 3 if last_count >= 4 else 4
             model.Add(lunch_counts[staff] <= max_shifts)
 
+        # 🌟 修復 4：拆散固定夥伴 (避免兩個人一直被排在一起)
+        penalty = 0
+        overlap_bonus = 0
+        
+        for i in range(len(lunch_staff)):
+            for j in range(i + 1, len(lunch_staff)):
+                staff1 = lunch_staff[i]
+                staff2 = lunch_staff[j]
+                pair_days = []
+                for d in range(1, month_days + 1):
+                    both = model.NewBoolVar(f'both_{d}_{staff1}_{staff2}')
+                    model.Add(both <= lunch_shifts[(d, staff1)])
+                    model.Add(both <= lunch_shifts[(d, staff2)])
+                    model.Add(both >= lunch_shifts[(d, staff1)] + lunch_shifts[(d, staff2)] - 1)
+                    pair_days.append(both)
+                
+                # 如果同一對夥伴出現超過 1 次，給予超級重罰！強迫 AI 換人！
+                pair_gt_1 = model.NewBoolVar(f'pair_gt_1_{staff1}_{staff2}')
+                model.Add(sum(pair_days) <= 1 + pair_gt_1 * 28) 
+                penalty += pair_gt_1 * 1000
+
         # ==========================================
         # 📖 引擎二：電子書輪值
         # ==========================================
@@ -96,11 +117,11 @@ def schedule():
             date_str = calendar_dates[d-1] if (d-1) < len(calendar_dates) else ""
             day_val = 1
             if '/' in date_str:
-                try: day_val = int(date_str.split('/')[1])
+                try: day_val = int(date_str.split('/')[1].strip())
                 except: pass
             
-            # 🌟 修復 2：絕對封印！1~10號皆不排 (<= 10)
-            if day_val <= 10 or str(d) in holiday_shifts:
+            # 🌟 修復 2：絕對封印！1~10號皆不排 (day_val < 11 才不排，也就是 11 號起排)
+            if day_val < 11 or str(d) in holiday_shifts:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
@@ -136,22 +157,17 @@ def schedule():
         # ==========================================
         # 🌟 公平正義指標 (Penalties & Bonuses)
         # ==========================================
-        penalty = 0
-        overlap_bonus = 0
-        
-        # 打掃歷史迴避
         for staff in clean_staff:
             history = clean_history.get(staff, {})
             for cat in clean_categories:
                 done_times = int(history.get(cat, 0))
                 penalty += clean_shifts[(staff, cat)] * (done_times * 100)
 
-        # 🌟 修復 3：打掃公平鐵拳 (強烈獎勵讓每個人都有事做，不准偏心)
         for staff in clean_staff:
             has_clean = model.NewBoolVar(f'has_clean_{staff}')
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) >= 1).OnlyEnforceIf(has_clean)
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) == 0).OnlyEnforceIf(has_clean.Not())
-            overlap_bonus += has_clean * 500  # 超級高分！強迫 AI 把工作分給沒拿到的人
+            overlap_bonus += has_clean * 500  
                     
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
