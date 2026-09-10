@@ -126,8 +126,8 @@ def schedule():
                 try: day_val = int(date_str.split('/')[1].strip())
                 except: pass
             
-            # 11 號起排 (1~10號絕對封印)
-            if day_val < 11 or str(d) in holiday_shifts:
+            # 10 號起排 (1~9號絕對封印)
+            if day_val < 10 or str(d) in holiday_shifts:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
