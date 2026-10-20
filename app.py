@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！(搭檔放寬與次數完美平衡版)"
+    return "機器人主廚已上線！(絕對公平動態權重版)"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -31,6 +31,8 @@ def schedule():
         # 🍱 引擎一：中午值班
         # ==========================================
         lunch_shifts = {}
+        total_lunch_slots = 0 # 🌟 新增：用來精準統計本月總共需要幾個中午班次
+        
         for d in range(1, month_days + 1):
             for staff in lunch_staff:
                 lunch_shifts[(d, staff)] = model.NewBoolVar(f'lunch_d{d}_{staff}')
@@ -42,6 +44,7 @@ def schedule():
                 valid_working = [s for s in working_today if s in lunch_staff]
                 work_count = len(valid_working)
                 req = 3 if work_count >= 5 else (2 if work_count == 4 else (1 if work_count == 3 else 0))
+                total_lunch_slots += req # 累加總班數
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 for staff in lunch_staff:
                     if staff not in valid_working:
@@ -53,6 +56,7 @@ def schedule():
                     try: day_val = int(date_str.split('/')[1].strip())
                     except: pass
                 req = 4 if day_val >= 26 else 3
+                total_lunch_slots += req # 累加總班數
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 
         group_cashier = ["吳仕惇", "孫淑美", "曾速賢", "王思婷"] 
@@ -80,22 +84,25 @@ def schedule():
             for d in range(1, month_days - 2):
                 model.Add(sum(lunch_shifts[(d + i, staff)] for i in range(4)) <= 1)
                 
-        # 🌟 修正：保證每人 3~4 次的飯碗
+        # 🌟 修正：動態計算基準值，達成「絕對公平」
+        baseline = total_lunch_slots // len(lunch_staff) if lunch_staff else 0
         lunch_counts = {staff: sum(lunch_shifts[(d, staff)] for d in range(1, month_days + 1)) for staff in lunch_staff}
+        
         for staff in lunch_staff:
+            # 1. 鐵腕限制：所有人的班數差距不得超過 1 (例如只能是 3次 或 4次)
+            model.Add(lunch_counts[staff] >= baseline)
+            model.Add(lunch_counts[staff] <= baseline + 1)
+            
+            # 2. 歷史權重平衡：將上個月班數作為阻力
             last_count = last_month_counts.get(staff, 0)
-            max_shifts = 3 if last_count >= 4 else 4
+            extra_shift = model.NewIntVar(0, 1, f'extra_{staff}')
+            model.Add(extra_shift == lunch_counts[staff] - baseline)
             
-            # 強制底線：不准有人低於 2 次！
-            model.Add(lunch_counts[staff] >= 2)
-            model.Add(lunch_counts[staff] <= max_shifts)
-            
-            # 柔性引導：如果少於 3 次，就扣分，逼迫 AI 盡量排到 3 或 4 次
-            shortfall = model.NewIntVar(0, 10, f'shortfall_{staff}')
-            model.Add(shortfall >= 3 - lunch_counts[staff])
-            penalty += shortfall * 100
+            # 懲罰機制：上個月上越多次的人，如果這個月又被塞了 extra_shift，扣分就越重
+            # 這樣 AI 就會被迫將那幾個「多出來 1 次」的班，派給上個月最閒的人
+            penalty += extra_shift * (last_count * 500)
 
-        # 🌟 修正：搭檔次數放寬，最多允許 2 次 (不囉嗦直接寫死)
+        # 搭檔次數放寬，最多允許 2 次
         for i in range(len(lunch_staff)):
             for j in range(i + 1, len(lunch_staff)):
                 staff1 = lunch_staff[i]
@@ -108,7 +115,6 @@ def schedule():
                     model.Add(both >= lunch_shifts[(d, staff1)] + lunch_shifts[(d, staff2)] - 1)
                     pair_days.append(both)
                 
-                # 任何兩個人，在這 28 天內，同班次數絕對不可超過 2 次！
                 model.Add(sum(pair_days) <= 2)
 
         # ==========================================
@@ -141,7 +147,6 @@ def schedule():
         for staff in ebook_staff:
              model.Add(ebook_counts[staff] <= 2)
              
-        # 鼓勵電子書也要平均分配 (每人至少 1 次)
         for staff in ebook_staff:
             has_ebook = model.NewBoolVar(f'has_ebook_{staff}')
             model.Add(ebook_counts[staff] >= 1).OnlyEnforceIf(has_ebook)
@@ -167,21 +172,18 @@ def schedule():
         for cat in clean_categories:
             model.Add(sum(clean_shifts[(staff, cat)] for staff in clean_staff) == clean_reqs[cat])
 
-        # 打掃歷史迴避
         for staff in clean_staff:
             history = clean_history.get(staff, {})
             for cat in clean_categories:
                 done_times = int(history.get(cat, 0))
                 penalty += clean_shifts[(staff, cat)] * (done_times * 100)
 
-        # 打掃公平鐵拳：盡量讓大家都拿到 1 個工作
         for staff in clean_staff:
             has_clean = model.NewBoolVar(f'has_clean_{staff}')
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) >= 1).OnlyEnforceIf(has_clean)
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) == 0).OnlyEnforceIf(has_clean.Not())
             overlap_bonus += has_clean * 500  
                     
-        # 連動排班加分
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
                 if staff in lunch_staff:
