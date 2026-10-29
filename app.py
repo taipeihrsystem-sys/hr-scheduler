@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！(完美結合主控台真實假日清單版)"
+    return "機器人主廚已上線！(防呆閃避請假人員版)"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -22,15 +22,15 @@ def schedule():
         holiday_shifts = data.get('holiday_shifts', {}) 
         last_month_counts = data.get('last_month_counts', {})
         clean_history = data.get('clean_history', {})
-        
-        # 🌟 直接接收前端送來的真實假日與六日名單 (1~28 的 index)
         true_holidays = data.get('true_holidays', [])
+        
+        # 🌟 接收最新打包送來的「平日請假名單」
+        leave_staff = data.get('leave_staff', {})
         
         model = cp_model.CpModel()
         penalty = 0
         overlap_bonus = 0
         
-        # 🌟 使用試算表定義的絕對假日，不再用請假人數亂猜了！
         is_workday = {}
         for d in range(1, month_days + 1):
             if d in true_holidays:
@@ -50,7 +50,7 @@ def schedule():
                 
         for d in range(1, month_days + 1):
             day_str = str(d)
-            if not is_workday[d]: # 假日 (六日或主控台國定假日)
+            if not is_workday[d]: 
                 working_today = holiday_shifts.get(day_str, [])
                 valid_working = [s for s in working_today if s in lunch_staff]
                 work_count = len(valid_working)
@@ -60,7 +60,7 @@ def schedule():
                 for staff in lunch_staff:
                     if staff not in valid_working:
                         model.Add(lunch_shifts[(d, staff)] == 0)
-            else: # 平日
+            else: 
                 date_str = calendar_dates[d-1] if (d-1) < len(calendar_dates) else ""
                 day_val = 1
                 if '/' in date_str:
@@ -69,6 +69,13 @@ def schedule():
                 req = 4 if day_val >= 26 else 3
                 total_lunch_slots += req 
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
+        
+        # 🌟 強制封殺令：任何一天只要該員工有畫圈圈，午餐絕對不可排班！
+        for d in range(1, month_days + 1):
+            absentees = leave_staff.get(str(d), [])
+            for staff in lunch_staff:
+                if staff in absentees:
+                    model.Add(lunch_shifts[(d, staff)] == 0)
                 
         group_cashier = ["吳仕惇", "孫淑美", "曾速賢", "王思婷"] 
         group_specific = ["徐淑芳", "朱育萱", "曹芯穎"] 
@@ -134,12 +141,18 @@ def schedule():
                 try: day_val = int(date_str.split('/')[1].strip())
                 except: pass
             
-            # 10 號起排，而且保證扣除您在試算表定義的國定假日與六日
             if day_val < 10 or not is_workday[d]:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
                 model.Add(sum(ebook_shifts[(d, staff)] for staff in ebook_staff) == 1)
+
+        # 🌟 強制封殺令：任何一天只要該員工有畫圈圈，電子書也絕對不可排班！
+        for d in range(1, month_days + 1):
+            absentees = leave_staff.get(str(d), [])
+            for staff in ebook_staff:
+                if staff in absentees:
+                    model.Add(ebook_shifts[(d, staff)] == 0)
 
         for staff in ebook_staff:
             for d in range(1, month_days - 4):
@@ -155,7 +168,6 @@ def schedule():
             model.Add(ebook_counts[staff] == 0).OnlyEnforceIf(has_ebook.Not())
             overlap_bonus += has_ebook * 50
 
-        # 電子書絕對優先挑選當天中午值班的人 (10000分權重)
         for d in range(1, month_days + 1):
             for staff in ebook_staff:
                 if staff in lunch_staff:
