@@ -7,7 +7,7 @@ CORS(app)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "機器人主廚已上線！(絕對公平動態權重版)"
+    return "機器人主廚已上線！(完美結合主控台真實假日清單版)"
 
 @app.route('/schedule', methods=['POST'])
 def schedule():
@@ -23,15 +23,26 @@ def schedule():
         last_month_counts = data.get('last_month_counts', {})
         clean_history = data.get('clean_history', {})
         
+        # 🌟 直接接收前端送來的真實假日與六日名單 (1~28 的 index)
+        true_holidays = data.get('true_holidays', [])
+        
         model = cp_model.CpModel()
         penalty = 0
         overlap_bonus = 0
         
+        # 🌟 使用試算表定義的絕對假日，不再用請假人數亂猜了！
+        is_workday = {}
+        for d in range(1, month_days + 1):
+            if d in true_holidays:
+                is_workday[d] = False
+            else:
+                is_workday[d] = True
+
         # ==========================================
         # 🍱 引擎一：中午值班
         # ==========================================
         lunch_shifts = {}
-        total_lunch_slots = 0 # 🌟 新增：用來精準統計本月總共需要幾個中午班次
+        total_lunch_slots = 0 
         
         for d in range(1, month_days + 1):
             for staff in lunch_staff:
@@ -39,24 +50,24 @@ def schedule():
                 
         for d in range(1, month_days + 1):
             day_str = str(d)
-            if day_str in holiday_shifts:
-                working_today = holiday_shifts[day_str]
+            if not is_workday[d]: # 假日 (六日或主控台國定假日)
+                working_today = holiday_shifts.get(day_str, [])
                 valid_working = [s for s in working_today if s in lunch_staff]
                 work_count = len(valid_working)
                 req = 3 if work_count >= 5 else (2 if work_count == 4 else (1 if work_count == 3 else 0))
-                total_lunch_slots += req # 累加總班數
+                total_lunch_slots += req 
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 for staff in lunch_staff:
                     if staff not in valid_working:
                         model.Add(lunch_shifts[(d, staff)] == 0)
-            else:
+            else: # 平日
                 date_str = calendar_dates[d-1] if (d-1) < len(calendar_dates) else ""
                 day_val = 1
                 if '/' in date_str:
                     try: day_val = int(date_str.split('/')[1].strip())
                     except: pass
                 req = 4 if day_val >= 26 else 3
-                total_lunch_slots += req # 累加總班數
+                total_lunch_slots += req 
                 model.Add(sum(lunch_shifts[(d, staff)] for staff in lunch_staff) == req)
                 
         group_cashier = ["吳仕惇", "孫淑美", "曾速賢", "王思婷"] 
@@ -84,25 +95,17 @@ def schedule():
             for d in range(1, month_days - 2):
                 model.Add(sum(lunch_shifts[(d + i, staff)] for i in range(4)) <= 1)
                 
-        # 🌟 修正：動態計算基準值，達成「絕對公平」
         baseline = total_lunch_slots // len(lunch_staff) if lunch_staff else 0
         lunch_counts = {staff: sum(lunch_shifts[(d, staff)] for d in range(1, month_days + 1)) for staff in lunch_staff}
         
         for staff in lunch_staff:
-            # 1. 鐵腕限制：所有人的班數差距不得超過 1 (例如只能是 3次 或 4次)
             model.Add(lunch_counts[staff] >= baseline)
             model.Add(lunch_counts[staff] <= baseline + 1)
-            
-            # 2. 歷史權重平衡：將上個月班數作為阻力
             last_count = last_month_counts.get(staff, 0)
             extra_shift = model.NewIntVar(0, 1, f'extra_{staff}')
             model.Add(extra_shift == lunch_counts[staff] - baseline)
-            
-            # 懲罰機制：上個月上越多次的人，如果這個月又被塞了 extra_shift，扣分就越重
-            # 這樣 AI 就會被迫將那幾個「多出來 1 次」的班，派給上個月最閒的人
             penalty += extra_shift * (last_count * 500)
 
-        # 搭檔次數放寬，最多允許 2 次
         for i in range(len(lunch_staff)):
             for j in range(i + 1, len(lunch_staff)):
                 staff1 = lunch_staff[i]
@@ -114,7 +117,6 @@ def schedule():
                     model.Add(both <= lunch_shifts[(d, staff2)])
                     model.Add(both >= lunch_shifts[(d, staff1)] + lunch_shifts[(d, staff2)] - 1)
                     pair_days.append(both)
-                
                 model.Add(sum(pair_days) <= 2)
 
         # ==========================================
@@ -132,8 +134,8 @@ def schedule():
                 try: day_val = int(date_str.split('/')[1].strip())
                 except: pass
             
-            # 10 號起排 (1~9號絕對封印)
-            if day_val < 10 or str(d) in holiday_shifts:
+            # 10 號起排，而且保證扣除您在試算表定義的國定假日與六日
+            if day_val < 10 or not is_workday[d]:
                 for staff in ebook_staff:
                     model.Add(ebook_shifts[(d, staff)] == 0)
             else:
@@ -152,6 +154,16 @@ def schedule():
             model.Add(ebook_counts[staff] >= 1).OnlyEnforceIf(has_ebook)
             model.Add(ebook_counts[staff] == 0).OnlyEnforceIf(has_ebook.Not())
             overlap_bonus += has_ebook * 50
+
+        # 電子書絕對優先挑選當天中午值班的人 (10000分權重)
+        for d in range(1, month_days + 1):
+            for staff in ebook_staff:
+                if staff in lunch_staff:
+                    overlap_var = model.NewBoolVar(f'ebook_lunch_overlap_{d}_{staff}')
+                    model.Add(overlap_var <= lunch_shifts[(d, staff)])
+                    model.Add(overlap_var <= ebook_shifts[(d, staff)])
+                    model.Add(overlap_var >= lunch_shifts[(d, staff)] + ebook_shifts[(d, staff)] - 1)
+                    overlap_bonus += overlap_var * 10000 
 
         # ==========================================
         # 🧹 引擎三：打掃輪值
@@ -183,14 +195,6 @@ def schedule():
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) >= 1).OnlyEnforceIf(has_clean)
             model.Add(sum(clean_shifts[(staff, cat)] for cat in clean_categories) == 0).OnlyEnforceIf(has_clean.Not())
             overlap_bonus += has_clean * 500  
-                    
-        for d in range(1, month_days + 1):
-            for staff in ebook_staff:
-                if staff in lunch_staff:
-                    overlap_var = model.NewBoolVar(f'overlap_d{d}_{staff}')
-                    model.Add(overlap_var <= lunch_shifts[(d, staff)])
-                    model.Add(overlap_var <= ebook_shifts[(d, staff)])
-                    overlap_bonus += overlap_var * 10 
 
         model.Minimize(penalty - overlap_bonus)
 
